@@ -9,6 +9,7 @@ from src.config import config_errors, get_config
 from src.supabase_client import get_client
 from src.validators import validate_password, validate_username
 from src.security import hash_password, needs_rehash, verify_password
+from src.persistent_login import clear_remember_token, get_remember_token, set_remember_token
 
 MAX_LOGIN_ATTEMPTS = 6
 LOCK_SECONDS = 60
@@ -37,6 +38,38 @@ def _session_user(user: dict[str, Any]) -> dict[str, Any]:
         "avatar_emoji": user.get("avatar_emoji") or "💌",
     }
 
+def _persist_login(client, user_id: str) -> None:
+    try:
+        token = db.create_persistent_session(client, user_id)
+        set_remember_token(token)
+    except Exception:
+        # O login normal continua funcionando mesmo se o navegador bloquear o storage.
+        pass
+
+
+def try_restore_persistent_login() -> bool:
+    """Restore login from the browser token when Streamlit creates a new session."""
+    if is_logged_in():
+        return True
+    token = get_remember_token()
+    if not token:
+        return False
+    try:
+        client = get_client()
+        user = db.get_user_by_persistent_token(client, token)
+        if not user:
+            clear_remember_token()
+            return False
+        st.session_state.app_user = _session_user(user)
+        st.session_state.login_fail_count = 0
+        st.session_state.login_locked_until = 0.0
+        _select_first_available_group(client)
+        return True
+    except Exception:
+        # Evita bloquear a tela de login se o token antigo não puder ser validado.
+        return False
+
+
 
 def login(username: str, password: str) -> tuple[bool, str]:
     now = time.time()
@@ -54,6 +87,7 @@ def login(username: str, password: str) -> tuple[bool, str]:
             db.execute_query(client.table("app_users").update({"password_hash": hash_password(password)}).eq("id", user["id"]))
         db.mark_login(client, user["id"])
         st.session_state.app_user = _session_user(user)
+        _persist_login(client, user["id"])
         st.session_state.login_fail_count = 0
         st.session_state.login_locked_until = 0.0
         invite_code = str(st.query_params.get("invite") or "").strip().upper()
@@ -92,6 +126,13 @@ def _select_first_available_group(client=None) -> None:
 
 
 def logout() -> None:
+    token = get_remember_token()
+    try:
+        if token:
+            db.revoke_persistent_token(get_client(), token)
+    except Exception:
+        pass
+    clear_remember_token()
     for key in ("app_user", "current_group_id"):
         st.session_state[key] = None
     st.rerun()
@@ -119,6 +160,7 @@ def create_account(username: str, display_name: str, password: str, invite_code:
             group = db.join_group_by_invite(client, user["id"], invite_code or "")
             msg = f"Conta criada e adicionada ao grupo {group['name']}."
         st.session_state.app_user = _session_user(user)
+        _persist_login(client, user["id"])
         _select_first_available_group(client)
         return True, msg
     except Exception as exc:
@@ -179,6 +221,7 @@ def render_auth_page() -> None:
         with st.form("login_form"):
             username = st.text_input("Nome de usuário", placeholder="ex.: jorge")
             password = st.text_input("Senha", type="password")
+            st.caption("Este navegador ficará conectado até você clicar em Sair.")
             submitted = st.form_submit_button("Entrar no presente")
             if submitted:
                 ok, msg = login(username, password)
@@ -218,4 +261,4 @@ def render_auth_page() -> None:
                         st.error(msg)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.caption("Privado por convite. Sem email, sem cadastro público aberto e sem senha em texto puro.")
+    st.caption("Privado por convite. Sem email, sem cadastro público aberto e sem senha em texto puro. A persistência usa um token revogável salvo neste navegador.")

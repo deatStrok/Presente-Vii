@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import httpx
@@ -129,6 +130,86 @@ def create_app_user(client: Client, username: str, display_name: str, password_h
 def mark_login(client: Client, user_id: str) -> None:
     execute_query(client.table("app_users").update({"last_login_at": datetime.utcnow().isoformat()}).eq("id", user_id))
 
+
+
+def hash_remember_token(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def create_persistent_session(client: Client, user_id: str, *, days: int = 60) -> str:
+    """Create a revocable persistent-login token for browser storage.
+
+    Only the SHA-256 hash goes to Supabase. The raw token is returned once and
+    stored in the user's browser localStorage by src.persistent_login.
+    """
+    raw_token = secrets.token_urlsafe(32)
+    expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat()
+    execute_query(
+        client.table("persistent_sessions").insert(
+            {
+                "user_id": user_id,
+                "token_hash": hash_remember_token(raw_token),
+                "expires_at": expires_at,
+            }
+        )
+    )
+    return raw_token
+
+
+def get_user_by_persistent_token(client: Client, token: str) -> dict[str, Any] | None:
+    token = (token or "").strip()
+    if not token:
+        return None
+    result = execute_query(
+        client.table("persistent_sessions")
+        .select("id, user_id, expires_at, revoked_at, user:app_users(id, username, display_name, avatar_emoji, is_active, created_at)")
+        .eq("token_hash", hash_remember_token(token))
+        .is_("revoked_at", "null")
+        .limit(1)
+    )
+    session = one_or_none(result)
+    if not session:
+        return None
+
+    expires_at = str(session.get("expires_at") or "")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+        if expiry < datetime.utcnow():
+            revoke_persistent_token(client, token)
+            return None
+    except Exception:
+        return None
+
+    user = session.get("user") or {}
+    if not user or not user.get("is_active", True):
+        return None
+    execute_query(
+        client.table("persistent_sessions")
+        .update({"last_used_at": datetime.utcnow().isoformat()})
+        .eq("id", session["id"])
+    )
+    return user
+
+
+def revoke_persistent_token(client: Client, token: str | None) -> None:
+    token = (token or "").strip()
+    if not token:
+        return
+    execute_query(
+        client.table("persistent_sessions")
+        .update({"revoked_at": datetime.utcnow().isoformat()})
+        .eq("token_hash", hash_remember_token(token))
+        .is_("revoked_at", "null")
+    )
+
+
+def revoke_all_persistent_sessions_for_user(client: Client, user_id: str) -> None:
+    execute_query(
+        client.table("persistent_sessions")
+        .update({"revoked_at": datetime.utcnow().isoformat()})
+        .eq("user_id", user_id)
+        .is_("revoked_at", "null")
+    )
 
 def current_user() -> dict[str, Any]:
     user = st.session_state.get("app_user")

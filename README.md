@@ -6,7 +6,8 @@ MVP privado e fofo para guardar lembranças em vários grupos: namoro, família 
 
 - Login simples por **nome de usuário + senha**.
 - Primeira conta criada no app vira dona dos grupos iniciais.
-- Depois disso, novas contas entram por **código de convite**.
+- Depois disso, novas contas entram por **código de convite, link ou QR Code**.
+- O login fica persistente neste navegador por token revogável salvo no localStorage.
 - Uma pessoa pode participar de vários grupos.
 - Cada grupo tem timeline, mapa, playlists, cartas e mídias separados.
 - Membros podem adicionar fotos, vídeos, áudios, momentos, lugares, playlists e cartas.
@@ -15,6 +16,7 @@ MVP privado e fofo para guardar lembranças em vários grupos: namoro, família 
 - Cartas só abrem depois da data/hora definida pelo criador.
 - Cartas aceitam foto, áudio e vídeo.
 - Storage privado no Supabase.
+- QR Code e link de convite apontando para `https://memorium.streamlit.app` por padrão.
 - Layout responsivo com estética azul + verde escuro + rosa.
 
 ## Arquitetura
@@ -33,7 +35,8 @@ Presente_Vii_grupos_streamlit_supabase/
     auth.py              # login simples, cadastro por convite
     security.py          # hash/verificação de senha com PBKDF2-HMAC-SHA256
     config.py            # leitura de secrets
-    db.py                # CRUD, grupos, permissões e exportação
+    persistent_login.py  # token persistente no navegador/localStorage
+    db.py                # CRUD, grupos, permissões, sessões persistentes e exportação
     storage.py           # upload/signed URL de imagem, áudio e vídeo
     supabase_client.py   # client Supabase com service_role/secret key no servidor
     ui.py                # CSS responsivo e componentes visuais
@@ -61,6 +64,7 @@ Presente_Vii_grupos_streamlit_supabase/
 - `app_users`: usuários do app, com `username`, `display_name` e `password_hash`.
 - `groups`: grupos privados com nome, descrição, cor e `invite_code`.
 - `group_members`: associação muitos-para-muitos entre pessoas e grupos, com papel `owner`, `admin` ou `member`.
+- `persistent_sessions`: tokens revogáveis para manter o usuário conectado no navegador.
 - `timeline_entries`: momentos do grupo.
 - `places`: lugares do grupo para o mapa.
 - `playlists`: links e notas de playlists.
@@ -82,6 +86,8 @@ Como o usuário do app não vira um JWT do Supabase, o app usa a `SUPABASE_SERVI
 As senhas não ficam em texto puro. Esta versão usa `hashlib.pbkdf2_hmac`, da biblioteca padrão do Python, com PBKDF2-HMAC-SHA256 e 600.000 iterações. Assim não depende mais do pacote `argon2-cffi` e evita o erro `ModuleNotFoundError: No module named 'argon2'`.
 
 As tabelas ficam com RLS ativado e sem policies públicas. A anon/publishable key não deve ser usada nesta versão.
+
+A persistência de login usa um token aleatório salvo no localStorage do navegador e apenas o hash SHA-256 dele fica no Supabase. O token expira em 60 dias e é revogado ao clicar em **Sair**. Para um produto público com requisito rígido de segurança, o ideal continua sendo autenticação com backend e cookie HttpOnly/Secure/SameSite.
 
 ## Instalação no Windows sem PowerShell
 
@@ -116,6 +122,7 @@ Preencha:
 SUPABASE_URL = "https://SEU-PROJECT-REF.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "SUA-SERVICE-ROLE-OU-SECRET-KEY"
 APP_NAME = "Presente Vii"
+APP_BASE_URL = "https://memorium.streamlit.app"
 APP_DEBUG_AUTH = false
 ```
 
@@ -170,8 +177,9 @@ Depois que já existir pelo menos um usuário, novas pessoas só criam conta com
 1. Entre no app.
 2. Vá em **Grupos**.
 3. Selecione o grupo.
-4. Em **Configurações**, copie o código de convite.
-5. A pessoa entra no app, vai em **Criar conta** e usa esse código.
+4. Em **Configurações**, copie o código, o link ou use o QR Code.
+5. O link/QR Code aponta para `APP_BASE_URL/?invite=CODIGO`.
+6. A pessoa entra no app, vai em **Criar conta** e o código já aparece preenchido.
 
 ## Permissões
 
@@ -227,15 +235,34 @@ A versão antiga do reset tentava apagar `storage.objects` via SQL. A versão no
 
 A versão nova não usa mais `argon2`. Instale novamente as dependências com `install_windows_cmd.bat` e rode com `run_windows_cmd.bat`.
 
+## Atualizar banco sem apagar dados
+
+Se você já tem dados no Supabase e quer apenas ativar a persistência de login, rode:
+
+```txt
+supabase/03_LOGIN_PERSISTENTE.sql
+```
+
+Se ainda não rodou as atualizações anteriores, rode também:
+
+```txt
+supabase/01_ATUALIZAR_SEM_APAGAR_DADOS.sql
+supabase/02_MAPA_BUSCA_E_LOCALIZACOES.sql
+```
+
+Não rode `00_RODAR_NO_SQL_EDITOR.sql` em produção com dados reais, porque ele reseta as tabelas do app.
+
 ## Deploy
 
 ### Streamlit Community Cloud
 
 1. Suba o projeto para um repositório privado.
 2. Crie app apontando para `app.py`.
-3. Configure os secrets no painel do Streamlit.
-4. Rode `supabase/00_RODAR_NO_SQL_EDITOR.sql` no Supabase.
+3. Configure os secrets no painel do Streamlit, incluindo `APP_BASE_URL = "https://memorium.streamlit.app"`.
+4. Rode `supabase/00_RODAR_NO_SQL_EDITOR.sql` no Supabase se for instalação limpa, ou `03_LOGIN_PERSISTENTE.sql` se já tiver dados.
 5. Acesse o app e crie o primeiro usuário.
+
+No Streamlit Community Cloud, selecione Python 3.12 nas configurações avançadas do deploy para evitar a tentativa de compilar `pyarrow` em Python 3.14.
 
 ### Render/Fly/Railway-like
 
@@ -329,7 +356,7 @@ supabase/00_RODAR_NO_SQL_EDITOR.sql
 Configure no `.streamlit/secrets.toml` a URL pública do app para o QR Code funcionar fora do seu computador:
 
 ```toml
-APP_BASE_URL = "https://seu-app.streamlit.app"
+APP_BASE_URL = "https://memorium.streamlit.app"
 ```
 
 Para desenvolvimento local pode ficar:

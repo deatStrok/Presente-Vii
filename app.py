@@ -3,7 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src import db, ui
-from src.auth import init_auth_state, is_logged_in, logout, render_auth_page
+from src.auth import init_auth_state, is_logged_in, logout, render_auth_page, try_restore_persistent_login
 from src.config import get_config
 from src.pages import admin, groups, home, open_when, places, playlists, timeline
 from src.supabase_client import get_client
@@ -13,6 +13,8 @@ st.set_page_config(page_title="Presente Vii", page_icon="💌", layout="wide")
 init_auth_state()
 ui.inject_css()
 cfg = get_config()
+
+try_restore_persistent_login()
 
 if not is_logged_in():
     render_auth_page()

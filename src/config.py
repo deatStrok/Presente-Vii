@@ -43,7 +43,7 @@ def get_config() -> AppConfig:
         supabase_url=_secret("SUPABASE_URL"),
         supabase_service_role_key=_secret("SUPABASE_SERVICE_ROLE_KEY"),
         debug_auth=_secret("APP_DEBUG_AUTH", "false").lower() in {"1", "true", "yes", "sim"},
-        app_base_url=_secret("APP_BASE_URL"),
+        app_base_url=_secret("APP_BASE_URL", "https://memorium.streamlit.app"),
     )
 
 
